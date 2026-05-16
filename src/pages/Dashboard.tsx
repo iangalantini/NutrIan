@@ -27,67 +27,65 @@ const Dashboard: React.FC = () => {
     const fetchStats = async () => {
       setLoading(true);
       try {
-        // 1. Total Patients
+        // 1. Total de Pacientes
         const { count: patientCount } = await supabase
           .from('pacientes')
           .select('*', { count: 'exact', head: true })
           .eq('nutricionista_id', user.id);
 
-        // 2. Consultations of the week
-        const now = new Date();
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
-        startOfWeek.setHours(0, 0, 0, 0);
-        
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6); // Saturday
-        endOfWeek.setHours(23, 59, 59, 999);
-
-        const { count: weekCount } = await supabase
-          .from('consultas')
-          .select('id, paciente!inner(nutricionista_id)', { count: 'exact', head: true })
-          .eq('paciente.nutricionista_id', user.id)
-          .gte('data_consulta', startOfWeek.toISOString().split('T')[0])
-          .lte('data_consulta', endOfWeek.toISOString().split('T')[0]);
-
-        // 3. Patients without return
-        // We need: last consultation > 30 days ago AND (no next return OR next return in the past)
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
-        const todayStr = getTodayBR();
-
-        // Fetch all patients for this nutri
+        // 2. Buscar IDs de pacientes para filtros subsequentes
         const { data: patients } = await supabase
           .from('pacientes')
           .select('id, nome')
           .eq('nutricionista_id', user.id);
 
-        if (patients && patients.length > 0) {
-          const patientIds = patients.map(p => p.id);
+        const patientIds = patients?.map(p => p.id) || [];
+
+        // 3. Consultas da Semana
+        let weekCount = 0;
+        if (patientIds.length > 0) {
+          const now = new Date();
+          const startOfWeek = new Date(now);
+          startOfWeek.setDate(now.getDate() - now.getDay()); // Domingo
+          startOfWeek.setHours(0, 0, 0, 0);
           
-          // Fetch latest consultation for each patient
-          // This is a bit tricky with Supabase JS client without custom functions, 
-          // so we'll fetch all consultations for these patients and process.
-          // For a production app with many patients, a RPC would be better.
+          const endOfWeek = new Date(startOfWeek);
+          endOfWeek.setDate(startOfWeek.getDate() + 6); // Sábado
+          endOfWeek.setHours(23, 59, 59, 999);
+
+          const { count } = await supabase
+            .from('consultas')
+            .select('*', { count: 'exact', head: true })
+            .in('paciente_id', patientIds)
+            .gte('data_consulta', startOfWeek.toISOString().split('T')[0])
+            .lte('data_consulta', endOfWeek.toISOString().split('T')[0]);
+          
+          weekCount = count || 0;
+        }
+
+        // 4. Pacientes sem retorno
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+        const todayStr = getTodayBR();
+
+        const withoutReturn: { id: string; nome: string; lastConsultation: string }[] = [];
+
+        if (patientIds.length > 0) {
           const { data: consultations } = await supabase
             .from('consultas')
             .select('paciente_id, data_consulta, proximo_retorno')
             .in('paciente_id', patientIds)
             .order('data_consulta', { ascending: false });
 
-          const withoutReturn: { id: string; nome: string; lastConsultation: string }[] = [];
-          
-          patients.forEach(patient => {
+          patients?.forEach(patient => {
             const patientConsults = consultations?.filter(c => c.paciente_id === patient.id) || [];
             
             if (patientConsults.length > 0) {
               const latest = patientConsults[0];
               const nextReturn = latest.proximo_retorno;
               
-              // If last consult was > 30 days ago
               if (latest.data_consulta < thirtyDaysAgoStr) {
-                // And no future return scheduled
                 if (!nextReturn || nextReturn < todayStr) {
                   withoutReturn.push({
                     id: patient.id,
@@ -98,13 +96,13 @@ const Dashboard: React.FC = () => {
               }
             }
           });
-
-          setStats({
-            totalPatients: patientCount || 0,
-            weekConsultations: weekCount || 0,
-            patientsWithoutReturn: withoutReturn
-          });
         }
+
+        setStats({
+          totalPatients: patientCount || 0,
+          weekConsultations: weekCount,
+          patientsWithoutReturn: withoutReturn
+        });
 
       } catch (error) {
         console.error('Error fetching dashboard stats:', error);
